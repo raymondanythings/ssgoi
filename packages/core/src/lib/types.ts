@@ -79,3 +79,5 @@ export type SsgoiConfig = {
 export type SsgoiContext = (
   path: string
 ) => Transition & { key: TransitionKey };
+
+
