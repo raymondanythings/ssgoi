@@ -4,10 +4,13 @@ import {
   TRANSITION_STRATEGY,
   TransitionStrategy,
 } from "./transition-strategy";
+import { TRANSITION_SCOPE_HOOKS } from "./types";
 import type {
   Transition,
   TransitionCallback,
   TransitionOptions,
+  TransitionScope,
+  TransitionScopeHooks,
 } from "./types";
 import type { TransitionKey } from "./types";
 import { parseCallerLocation } from "./utils/parse-caller-location";
@@ -18,10 +21,46 @@ import { parseCallerLocation } from "./utils/parse-caller-location";
  */
 
 // Map to store transition definitions by key
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const transitionDefinitions = new Map<TransitionKey, Transition<any, any>>();
 
 // Map to store transition callbacks by key
-const transitionCallbacks = new Map<TransitionKey, TransitionCallback>();
+type TransitionCallbackEntry = {
+  callback: TransitionCallback;
+  scope: TransitionScope;
+  scopeHooks?: TransitionScopeHooks;
+};
+
+const transitionCallbacks = new Map<TransitionKey, TransitionCallbackEntry>();
+
+type AutoKeyMetadata = {
+  baseKey: string;
+};
+
+const autoKeyMetadata = new Map<TransitionKey, AutoKeyMetadata>();
+const autoKeyUsage = new Map<string, { active: number; nextSuffix: number }>();
+let symbolAutoKeyCounter = 0;
+
+function allocateAutoKey(baseKey: string): TransitionKey {
+  const record =
+    autoKeyUsage.get(baseKey) ?? ({ active: 0, nextSuffix: 1 } as const);
+
+  let key: TransitionKey = baseKey as TransitionKey;
+
+  if (record.active > 0) {
+    key = `${baseKey}#${record.nextSuffix}` as const;
+  }
+
+  const nextSuffix =
+    record.active > 0 ? record.nextSuffix + 1 : record.nextSuffix;
+
+  autoKeyUsage.set(baseKey, {
+    active: record.active + 1,
+    nextSuffix,
+  });
+  autoKeyMetadata.set(key, { baseKey });
+  return key;
+}
 
 /**
  * Registers a transition with a key and returns the callback
@@ -30,20 +69,26 @@ const transitionCallbacks = new Map<TransitionKey, TransitionCallback>();
 function registerTransition<TAnimationValue = number>(
   key: TransitionKey,
   transition: Transition<undefined, TAnimationValue>,
+  scope: TransitionScope,
   strategy?: (
     context: StrategyContext<TAnimationValue>,
   ) => TransitionStrategy<TAnimationValue>,
+  scopeHooks?: TransitionScopeHooks,
 ): TransitionCallback {
   transitionDefinitions.set(key, transition);
 
   // Return existing callback if it exists
-  let callback = transitionCallbacks.get(key);
-  if (callback) {
-    return callback;
+  const existingEntry = transitionCallbacks.get(key);
+  if (
+    existingEntry &&
+    existingEntry.scope === scope &&
+    existingEntry.scopeHooks === scopeHooks
+  ) {
+    return existingEntry.callback;
   }
 
   // Create new callback
-  callback = createTransitionCallback(
+  const callback = createTransitionCallback(
     () => {
       const trans = transitionDefinitions.get(key);
       if (!trans) {
@@ -55,9 +100,11 @@ function registerTransition<TAnimationValue = number>(
     {
       strategy,
       onCleanupEnd: () => unregisterTransition(key),
+      scope,
+      scopeHooks,
     },
   );
-  transitionCallbacks.set(key, callback);
+  transitionCallbacks.set(key, { callback, scope, scopeHooks });
   return callback;
 }
 
@@ -67,6 +114,19 @@ function registerTransition<TAnimationValue = number>(
 function unregisterTransition(key: TransitionKey): void {
   transitionDefinitions.delete(key);
   transitionCallbacks.delete(key);
+
+  const metadata = autoKeyMetadata.get(key);
+  if (metadata) {
+    autoKeyMetadata.delete(key);
+    const record = autoKeyUsage.get(metadata.baseKey);
+    if (record) {
+      const active = Math.max(0, record.active - 1);
+      autoKeyUsage.set(metadata.baseKey, {
+        active,
+        nextSuffix: active === 0 ? 1 : record.nextSuffix,
+      });
+    }
+  }
 }
 
 // ---------------------------------------------
@@ -77,27 +137,32 @@ export function generateAutoKey(): TransitionKey {
   // Fallback to a stable key from the callsite when available
   const location = parseCallerLocation(new Error().stack);
   if (location) {
-    const key =
-      `auto_${location.file}_${location.line}_${location.column}` as const;
-    return key;
+    const baseKey = `auto_${location.file}_${location.line}_${location.column}`;
+    return allocateAutoKey(baseKey);
   }
 
   // Fallback to a unique symbol when callsite is unavailable
-  const key = Symbol(`ssgoi_auto_${Date.now()}`);
+  const baseKey = `auto_symbol_${symbolAutoKeyCounter++}`;
+  const key = Symbol(`ssgoi_auto_${baseKey}`);
+  autoKeyMetadata.set(key, { baseKey });
   return key;
 }
 
 // Optional GC-based cleanup registry (browser/node supporting FinalizationRegistry)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const FinalizationRegistryCtor = (globalThis as any).FinalizationRegistry as
   | (new (cb: (heldValue: TransitionKey) => void) => {
       register: (target: object, heldValue: TransitionKey) => void;
     })
   | undefined;
 const __cleanupRegistry = FinalizationRegistryCtor
-  ? (new (FinalizationRegistryCtor as any)((key: TransitionKey) => {
+  ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (new (FinalizationRegistryCtor as any)((key: TransitionKey) => {
       try {
         unregisterTransition(key);
-      } catch {}
+      } catch {
+        /* empty */
+      }
     }) as { register: (target: object, heldValue: TransitionKey) => void })
   : undefined;
 
@@ -162,20 +227,25 @@ export function transition<TAnimationValue = number>(
   },
 ): TransitionCallback {
   const resolvedKey = options.key ?? generateAutoKey();
+  const scope: TransitionScope = options.scope ?? "global";
+  const scopeHooks = options[TRANSITION_SCOPE_HOOKS];
 
   // Register GC cleanup for auto-generated keys bound to a ref
   if (options.ref && __cleanupRegistry) {
     try {
       __cleanupRegistry.register(options.ref, resolvedKey);
-    } catch {}
+    } catch {
+      /* empty */
+    }
   }
-
   return registerTransition(
     resolvedKey,
     {
       in: options.in,
       out: options.out,
     },
+    scope,
     options[TRANSITION_STRATEGY],
+    scopeHooks,
   );
 }

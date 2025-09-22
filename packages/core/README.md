@@ -121,6 +121,25 @@ function Card() {
 }
 ```
 
+### Scoped Element Transitions
+
+Control when an element should animate by setting the `scope` option:
+
+- `global` (default) – run when the element mounts/unmounts directly
+- `local` – only run when an ancestor transition is active
+- `both` – combine global and local behaviour
+
+```tsx
+transition({
+  key: 'sidebar-link',
+  scope: 'local',
+  in: fadeIn(),
+  out: slideUp(),
+});
+```
+
+Use `scope: 'local'` for list items or nested UI that should follow their container, and `scope: 'both'` when the element needs to respond to both its own lifecycle and higher-level page transitions.
+
 ## Built-in Transitions
 
 ### Page Transitions

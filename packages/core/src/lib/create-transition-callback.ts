@@ -1,4 +1,4 @@
-import type { Transition, TransitionCallback } from "./types";
+import type { Transition, TransitionCallback, TransitionScope } from "./types";
 import { Animator } from "./animator";
 import {
   createDefaultStrategy,
@@ -7,6 +7,68 @@ import {
   type TransitionConfigs,
 } from "./transition-strategy";
 
+type ActiveTransitionEntry = {
+  scope: TransitionScope;
+  depth: number;
+};
+
+const activeTransitions = new WeakMap<HTMLElement, ActiveTransitionEntry>();
+
+function activateTransition(
+  element: HTMLElement,
+  scope: TransitionScope,
+): () => void {
+  const existing = activeTransitions.get(element);
+  if (existing) {
+    existing.depth += 1;
+    return () => {
+      existing.depth -= 1;
+      if (existing.depth <= 0) {
+        activeTransitions.delete(element);
+      }
+    };
+  }
+
+  const entry: ActiveTransitionEntry = { scope, depth: 1 };
+  activeTransitions.set(element, entry);
+  return () => {
+    const current = activeTransitions.get(element);
+    if (!current) {
+      return;
+    }
+    current.depth -= 1;
+    if (current.depth <= 0) {
+      activeTransitions.delete(element);
+    }
+  };
+}
+
+function hasActiveAncestor(element: HTMLElement): boolean {
+  let current = element.parentElement;
+  while (current) {
+    if (activeTransitions.has(current)) {
+      return true;
+    }
+    current = current.parentElement;
+  }
+  return false;
+}
+
+function prepareScope(
+  element: HTMLElement,
+  scope: TransitionScope,
+): { shouldAnimate: boolean; deactivate: () => void } {
+  const shouldAnimate =
+    scope === "global" || scope === "both" || hasActiveAncestor(element);
+
+  if (!shouldAnimate) {
+    return { shouldAnimate: false, deactivate: () => {} };
+  }
+
+  const deactivate = activateTransition(element, scope);
+  return { shouldAnimate: true, deactivate };
+}
+
 export function createTransitionCallback<TAnimationValue = number>(
   getTransition: () => Transition<undefined, TAnimationValue>,
   options?: {
@@ -14,6 +76,11 @@ export function createTransitionCallback<TAnimationValue = number>(
     strategy?: (
       context: StrategyContext<TAnimationValue>,
     ) => TransitionStrategy<TAnimationValue>;
+    scope?: TransitionScope;
+    scopeHooks?: {
+      onActivate?: (direction: "in" | "out") => void;
+      onDeactivate?: (direction: "in" | "out") => void;
+    };
   },
 ): TransitionCallback {
   // Combined state: tracks both animation instance and direction
@@ -32,12 +99,22 @@ export function createTransitionCallback<TAnimationValue = number>(
     },
   };
 
+  const scope: TransitionScope = options?.scope ?? "global";
+
   // Create strategy upfront for closure
   const strategy =
     options?.strategy?.(context) ||
     createDefaultStrategy<TAnimationValue>(context);
 
   const runEntrance = async (element: HTMLElement) => {
+    const scopeGuard = prepareScope(element, scope);
+    if (!scopeGuard.shouldAnimate) {
+      return;
+    }
+
+    options?.scopeHooks?.onActivate?.("in");
+    let scopeActive = true;
+
     if (currentClone) {
       currentClone.remove();
       currentClone = null;
@@ -48,8 +125,24 @@ export function createTransitionCallback<TAnimationValue = number>(
       out: transition.out && Promise.resolve(transition.out(element)),
     };
 
-    const setup = await strategy.runIn(configs);
+    let setup;
+    try {
+      setup = await strategy.runIn(configs);
+    } catch (error) {
+      if (scopeActive) {
+        options?.scopeHooks?.onDeactivate?.("in");
+        scopeActive = false;
+      }
+      scopeGuard.deactivate();
+      throw error;
+    }
+
     if (!setup.config) {
+      if (scopeActive) {
+        options?.scopeHooks?.onDeactivate?.("in");
+        scopeActive = false;
+      }
+      scopeGuard.deactivate();
       return;
     }
 
@@ -57,7 +150,16 @@ export function createTransitionCallback<TAnimationValue = number>(
 
     // Wait if configured
     if (setup.config.wait) {
-      await setup.config.wait();
+      try {
+        await setup.config.wait();
+      } catch (error) {
+        if (scopeActive) {
+          options?.scopeHooks?.onDeactivate?.("in");
+          scopeActive = false;
+        }
+        scopeGuard.deactivate();
+        throw error;
+      }
     }
 
     const animator = Animator.fromState(setup.state, {
@@ -69,6 +171,11 @@ export function createTransitionCallback<TAnimationValue = number>(
       onComplete: () => {
         currentAnimation = null;
         setup.config?.onEnd?.();
+        if (scopeActive) {
+          options?.scopeHooks?.onDeactivate?.("in");
+          scopeActive = false;
+        }
+        scopeGuard.deactivate();
       },
     });
 
@@ -82,6 +189,15 @@ export function createTransitionCallback<TAnimationValue = number>(
   };
 
   const runExitTransition = async (element: HTMLElement) => {
+    const scopeGuard = prepareScope(element, scope);
+    if (!scopeGuard.shouldAnimate) {
+      options?.onCleanupEnd?.();
+      return;
+    }
+
+    options?.scopeHooks?.onActivate?.("out");
+    let scopeActive = true;
+
     currentClone = element;
 
     const transition = getTransition();
@@ -91,8 +207,24 @@ export function createTransitionCallback<TAnimationValue = number>(
       out: transition.out && Promise.resolve(transition.out(element)),
     };
 
-    const setup = await strategy.runOut(configs);
+    let setup;
+    try {
+      setup = await strategy.runOut(configs);
+    } catch (error) {
+      if (scopeActive) {
+        options?.scopeHooks?.onDeactivate?.("out");
+        scopeActive = false;
+      }
+      scopeGuard.deactivate();
+      throw error;
+    }
+
     if (!setup.config) {
+      if (scopeActive) {
+        options?.scopeHooks?.onDeactivate?.("out");
+        scopeActive = false;
+      }
+      scopeGuard.deactivate();
       return;
     }
 
@@ -102,7 +234,16 @@ export function createTransitionCallback<TAnimationValue = number>(
 
     // Wait if configured
     if (setup.config.wait) {
-      await setup.config.wait();
+      try {
+        await setup.config.wait();
+      } catch (error) {
+        if (scopeActive) {
+          options?.scopeHooks?.onDeactivate?.("out");
+          scopeActive = false;
+        }
+        scopeGuard.deactivate();
+        throw error;
+      }
     }
 
     const animator = Animator.fromState(setup.state, {
@@ -118,6 +259,11 @@ export function createTransitionCallback<TAnimationValue = number>(
           currentClone = null;
         }
         currentAnimation = null;
+        if (scopeActive) {
+          options?.scopeHooks?.onDeactivate?.("out");
+          scopeActive = false;
+        }
+        scopeGuard.deactivate();
         options?.onCleanupEnd?.();
       },
     });
