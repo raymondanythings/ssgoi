@@ -234,6 +234,43 @@ export default function Home() {
                 />
               )}
             </ShapeContainer>
+
+            <ShapeContainer label="Local Scope List">
+              {showShapes && (
+                <div className={styles.listContainer}>
+                  {["Library", "Gallery", "Profile"].map((item) => (
+                    <div
+                      key={item}
+                      ref={transition({
+                        key: `local-scope-${item}`,
+                        scope: "local",
+                        in: (element) => ({
+                          spring: { stiffness, damping },
+                          prepare: (el) => {
+                            el.style.opacity = "0";
+                            el.style.transform = "translateY(12px)";
+                          },
+                          tick: (progress) => {
+                            element.style.opacity = progress.toString();
+                            element.style.transform = `translateY(${(1 - progress) * 12}px)`;
+                          },
+                        }),
+                        out: (element) => ({
+                          spring: { stiffness, damping },
+                          tick: (progress) => {
+                            element.style.opacity = progress.toString();
+                            element.style.transform = `translateY(${(1 - progress) * 12}px)`;
+                          },
+                        }),
+                      })}
+                      className={styles.listItem}
+                    >
+                      {item}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ShapeContainer>
           </div>
         </div>
       </div>
