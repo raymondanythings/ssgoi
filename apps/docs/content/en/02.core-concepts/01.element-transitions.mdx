@@ -362,6 +362,27 @@ import { fade, scale /** etc */ } from "@ssgoi/react/transitions";
 }
 ```
 
+## Transition Scopes
+
+Use the `scope` option to control when an element animates:
+
+- `global` (default): animate whenever the element mounts or unmounts
+- `local`: animate only while a parent transition is running
+- `both`: combine both behaviours
+
+```jsx
+<div
+  ref={transition({
+    key: 'nav-item',
+    scope: 'local',
+    in: fadeIn(),
+    out: slideUp(),
+  })}
+>
+  Scoped item
+</div>
+```
+
 ## prepare Callback
 
 The stage where DOM elements are prepared before animation starts:

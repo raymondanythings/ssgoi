@@ -1,0 +1,35 @@
+---
+title: "Migrating to Scoped Transitions"
+description: "How to adopt transition scopes in existing projects"
+nav-title: "Scoped Transitions"
+---
+
+## Overview
+
+Version 2.2 introduces `scope` controls to fine-tune when element transitions should run. Existing code keeps the default `global` behaviour, so no breaking changes are required.
+
+## Recommended Updates
+
+1. **Audit shared components** – list rows, menu items, or hero elements that should only animate with their parent container.
+2. **Add `scope: 'local'`** where appropriate to prevent double animations during nested transitions.
+3. **Use `scope: 'both'`** when an element should react to both its own mount/unmount and page-level transitions.
+4. **Wrap complex trees** with the `TransitionScopeBoundary` (React) to share mounting state between siblings.
+
+## Example
+
+```tsx
+<div ref={transition({
+  key: 'nav-link',
+  scope: 'local',
+  in: fadeIn(),
+  out: slideUp(),
+})}>
+  Dashboard
+</div>
+```
+
+## FAQ
+
+- **Do I need to update existing transitions?** No. Without a `scope` value, components continue to animate globally.
+- **Will `scope: 'local'` break exit animations?** Exit transitions still run when the parent unmounts, matching Svelte's `|local` semantics.
+- **How does this work with auto-generated keys?** New deployments improve auto-key generation so repeated call sites receive unique suffixes automatically.
