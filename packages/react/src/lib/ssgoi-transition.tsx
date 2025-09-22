@@ -3,6 +3,7 @@
 import type { ReactNode, ElementType } from "react";
 import { transition } from "./transition";
 import { useSsgoi } from "./context";
+import { TransitionScopeBoundary } from "./scope-context";
 
 type SsgoiTransitionProps<T extends ElementType = "div"> = {
   children: ReactNode;
@@ -22,13 +23,15 @@ export const SsgoiTransition = <T extends ElementType = "div">({
   const Component = as || "div";
 
   return (
-    <Component
-      ref={transition(getTransition(id))}
-      data-ssgoi-transition={id}
-      className={className}
-      {...rest}
-    >
-      {children}
-    </Component>
+    <TransitionScopeBoundary>
+      <Component
+        ref={transition(getTransition(id))}
+        data-ssgoi-transition={id}
+        className={className}
+        {...rest}
+      >
+        {children}
+      </Component>
+    </TransitionScopeBoundary>
   );
 };
