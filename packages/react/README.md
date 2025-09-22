@@ -121,6 +121,45 @@ function Card() {
 }
 ```
 
+### Scoped Animations
+
+React exposes a transition scope option to control when child elements animate:
+
+- `global` (default) – animate whenever the element mounts/unmounts
+- `local` – animate only while an ancestor transition is active
+- `both` – combine both behaviours
+
+```tsx
+import { transition, TransitionScopeBoundary } from '@ssgoi/react';
+
+function NavigationItem({ children }) {
+  return (
+    <TransitionScopeBoundary>
+      <div
+        ref={transition({
+          key: `nav-${children}`,
+          scope: 'local',
+          in: (element) => ({
+            prepare: (el) => {
+              el.style.opacity = '0';
+              el.style.transform = 'translateY(12px)';
+            },
+            tick: (progress) => {
+              element.style.opacity = progress.toString();
+              element.style.transform = `translateY(${(1 - progress) * 12}px)`;
+            },
+          }),
+        })}
+      >
+        {children}
+      </div>
+    </TransitionScopeBoundary>
+  );
+}
+```
+
+Use `scope: 'local'` for nested UI that should animate with their parent, or `scope: 'both'` when the element should react to both its own lifecycle and page-level transitions.
+
 ## Next.js App Router Example
 
 ```tsx
