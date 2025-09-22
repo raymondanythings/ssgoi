@@ -2,6 +2,11 @@ import js from "@eslint/js";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 import pluginVue from "eslint-plugin-vue";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 export default tseslint.config(
   { ignores: ["dist"] },
@@ -20,6 +25,7 @@ export default tseslint.config(
         ecmaVersion: 2020,
         sourceType: "module",
         extraFileExtensions: [".vue"],
+        tsconfigRootDir: __dirname,
       },
     },
     rules: {

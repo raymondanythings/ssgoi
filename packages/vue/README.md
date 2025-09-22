@@ -145,6 +145,29 @@ app.directive('transition', vTransition);
 app.mount('#app');
 ```
 
+### Scoped Element Transitions
+
+Vue users can set the `scope` option the same way:
+
+- `global` (default) – animate whenever the element mounts/unmounts
+- `local` – animate only when an ancestor transition runs
+- `both` – combine both behaviours
+
+```vue
+<template>
+  <div
+    v-transition="{
+      key: 'nav-item',
+      scope: 'local',
+      in: fadeIn(),
+      out: slideUp(),
+    }"
+  >
+    Scoped item
+  </div>
+</template>
+```
+
 #### Method 2: Using Composition API
 
 ```vue
