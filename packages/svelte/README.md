@@ -28,6 +28,27 @@ yarn add @ssgoi/svelte
 pnpm add @ssgoi/svelte
 ```
 
+### Scoped Element Transitions
+
+Svelte bindings also accept the `scope` option:
+
+- `global` (default) – run on direct mount/unmount
+- `local` – run only when an ancestor transition is active
+- `both` – combine both behaviours
+
+```svelte
+<div
+  use:transition={{
+    key: "nav-item",
+    scope: "local",
+    in: fadeIn(),
+    out: slideUp(),
+  }}
+>
+  Scoped item
+</div>
+```
+
 ## Quick Start
 
 ### 1. Wrap your app layout
@@ -140,6 +161,27 @@ Animate specific elements during mount/unmount:
   }}
 >
   <h2>Animated Card</h2>
+</div>
+```
+
+### Scoped Element Transitions
+
+Svelte bindings also accept the `scope` option:
+
+- `global` (default) – run on direct mount/unmount
+- `local` – run only when an ancestor transition is active
+- `both` – combine both behaviours
+
+```svelte
+<div
+  use:transition={{
+    key: "nav-item",
+    scope: "local",
+    in: fadeIn(),
+    out: slideUp(),
+  }}
+>
+  Scoped item
 </div>
 ```
 

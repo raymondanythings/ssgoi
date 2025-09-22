@@ -13,6 +13,7 @@ export const transition = <TAnimationValue = number>(
     in: params?.in,
     out: params?.out,
     ref: node,
+    scope: params?.scope,
   });
   let cleanup = callback(node);
 
@@ -27,6 +28,7 @@ export const transition = <TAnimationValue = number>(
         in: newParams?.in,
         out: newParams?.out,
         ref: node,
+        scope: newParams?.scope,
       });
       cleanup = callback(node);
     },
