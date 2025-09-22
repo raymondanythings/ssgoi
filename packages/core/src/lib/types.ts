@@ -1,5 +1,12 @@
 export type TransitionKey = string | symbol;
 
+export const TRANSITION_SCOPE_HOOKS = Symbol("ssgoi_transition_scope_hooks");
+
+export type TransitionScopeHooks = {
+  onActivate?: (direction: "in" | "out") => void;
+  onDeactivate?: (direction: "in" | "out") => void;
+};
+
 export type SpringConfig = {
   stiffness?: number;
   damping?: number;
@@ -51,12 +58,16 @@ export type Transition<TContext = undefined, TAnimationValue = number> = {
   key?: TransitionKey;
 };
 
+export type TransitionScope = "local" | "global" | "both";
+
 export type TransitionOptions<
   TContext = undefined,
   TAnimationValue = number,
 > = Transition<TContext, TAnimationValue> & {
   key?: TransitionKey;
   ref?: object;
+  scope?: TransitionScope;
+  [TRANSITION_SCOPE_HOOKS]?: TransitionScopeHooks;
 };
 
 export type TransitionCallback = (
