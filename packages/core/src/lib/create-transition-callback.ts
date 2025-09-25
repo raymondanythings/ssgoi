@@ -1,9 +1,4 @@
-import type {
-  Transition,
-  TransitionCallback,
-  SequenceConfig,
-  TransitionConfig,
-} from "./types";
+import type { Transition, TransitionCallback, SequenceConfig } from "./types";
 import { Animator } from "./animator";
 import {
   createDefaultStrategy,
@@ -11,6 +6,18 @@ import {
   type TransitionStrategy,
   type TransitionConfigs,
 } from "./transition-strategy";
+
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+
+interface SequenceChildEntry {
+  callback: TransitionCallback;
+  cleanup?: () => void;
+  pendingTimers: Set<TimeoutHandle>;
+  notifyCleanup?: () => void;
+}
+
+let sequenceInstanceCounter = 0;
+const SEQUENCE_CHILD_KEY_ATTR = "data-ssgoi-sequence-key";
 
 export function createTransitionCallback<TAnimationValue = number>(
   getTransition: () => Transition<undefined, TAnimationValue>,
@@ -23,6 +30,11 @@ export function createTransitionCallback<TAnimationValue = number>(
     baseKey?: string | symbol;
   },
 ): TransitionCallback {
+  const sequenceEntries = new Map<string, SequenceChildEntry>();
+  const sequenceInstanceId = `seq-${++sequenceInstanceCounter}`;
+  let activeCleanup: (() => void) | undefined;
+  let currentElement: HTMLElement | null = null;
+
   // Combined state: tracks both animation instance and direction
   let currentAnimation: {
     animator: Animator<TAnimationValue>;
@@ -149,17 +161,45 @@ export function createTransitionCallback<TAnimationValue = number>(
   };
 
   return (element: HTMLElement | null) => {
-    if (!element) return;
+    if (!element) {
+      if (activeCleanup) {
+        activeCleanup();
+        activeCleanup = undefined;
+      }
+      currentElement = null;
+      return;
+    }
+
+    if (element === currentElement) {
+      return;
+    }
+
+    if (activeCleanup) {
+      activeCleanup();
+      activeCleanup = undefined;
+    }
+
+    currentElement = element;
 
     // Handle sequence transitions
     if (options?.sequenceConfig) {
-      return applySequenceTransition(
+      const sequenceOptions =
+        options.onCleanupEnd || options.strategy
+          ? {
+              onCleanupEnd: options.onCleanupEnd,
+              strategy: options.strategy,
+            }
+          : undefined;
+      activeCleanup = applySequenceTransition(
         element,
         getTransition,
         options.sequenceConfig,
         options.baseKey || "sequence",
-        options,
+        sequenceEntries,
+        sequenceInstanceId,
+        sequenceOptions,
       );
+      return;
     }
 
     // Handle regular single-element transition
@@ -168,7 +208,7 @@ export function createTransitionCallback<TAnimationValue = number>(
 
     runEntrance(element);
 
-    return () => {
+    activeCleanup = () => {
       const cloned = element.cloneNode(true) as HTMLElement;
       runExitTransition(cloned);
     };
@@ -201,7 +241,9 @@ function applySequenceTransition<TAnimationValue>(
   parentElement: HTMLElement,
   getTransition: () => Transition<undefined, TAnimationValue>,
   sequenceConfig: SequenceConfig,
-  _baseKey: string | symbol,
+  baseKey: string | symbol,
+  entries: Map<string, SequenceChildEntry>,
+  instanceId: string,
   parentOptions?: {
     onCleanupEnd?: () => void;
     strategy?: (
@@ -210,193 +252,240 @@ function applySequenceTransition<TAnimationValue>(
   },
 ): () => void {
   const children = Array.from(parentElement.children) as HTMLElement[];
+  const total = children.length;
 
   const hostParent = parentElement.parentElement;
   const nextSibling = parentElement.nextElementSibling;
+  const fallbackParent =
+    hostParent?.parentElement ?? parentElement.parentElement;
+  const fallbackSibling =
+    hostParent?.nextElementSibling ?? parentElement.nextElementSibling;
 
-  const resolveTransitionConfig = async (
-    configSource:
-      | Transition<undefined, TAnimationValue>["in"]
-      | Transition<undefined, TAnimationValue>["out"],
-    node: HTMLElement,
-  ): Promise<TransitionConfig<TAnimationValue> | undefined> => {
-    if (!configSource) return undefined;
-    const value =
-      typeof configSource === "function" ? configSource(node) : configSource;
-    if (value && typeof value === "object" && "then" in value) {
-      return (await value) as TransitionConfig<TAnimationValue>;
-    }
-    return value as TransitionConfig<TAnimationValue>;
-  };
+  let insertionParent: Element | null = hostParent;
+  let insertionSibling: Element | null = nextSibling;
 
-  const playTransition = async (
-    node: HTMLElement,
-    config: TransitionConfig<TAnimationValue>,
-    direction: "in" | "out",
-  ) => {
-    config.prepare?.(node);
-
-    if (config.wait) {
-      await config.wait();
-    }
-
-    config.onStart?.();
-
-    if (config.tick && config.spring) {
-      const duration = 500;
-      const startTime = performance.now();
-
-      await new Promise<void>((resolve) => {
-        const animate = (currentTime: number) => {
-          const elapsed = currentTime - startTime;
-          const progress = Math.min(elapsed / duration, 1);
-          const easedProgress = 1 - Math.pow(1 - progress, 3);
-          const value = direction === "in" ? easedProgress : 1 - easedProgress;
-
-          config.tick?.(value as TAnimationValue);
-
-          if (progress < 1) {
-            requestAnimationFrame(animate);
-          } else {
-            config.onEnd?.();
-            resolve();
-          }
-        };
-
-        requestAnimationFrame(animate);
-      });
-    } else {
-      config.onEnd?.();
-    }
-  };
-
-  // Run entrance animations for all children with sequence timing
-  children.forEach((child, index) => {
-    const delay = calculateSequenceDelay(
-      index,
-      children.length,
-      sequenceConfig,
-    );
-
-    // Apply entrance transition with delay
-    const startEntrance = async () => {
-      try {
-        const transition = getTransition();
-        const config = await resolveTransitionConfig(transition.in, child);
-        if (!config) return;
-        await playTransition(child, config, "in");
-      } catch (error) {
-        console.error("⚠️ Sequence entrance error", error);
-      }
+  if (total === 0) {
+    return () => {
+      parentOptions?.onCleanupEnd?.();
     };
+  }
 
-    if (delay > 0) {
-      setTimeout(() => {
-        void startEntrance();
-      }, delay);
-    } else {
-      void startEntrance();
-    }
+  const baseKeyString =
+    typeof baseKey === "symbol"
+      ? (baseKey.description ?? String(baseKey))
+      : String(baseKey);
+
+  const records = children.map((child, index) => {
+    const key = ensureSequenceChildKey(child, index, baseKeyString, instanceId);
+    return { child, key, index };
   });
 
-  // Return cleanup function that handles sequence exit animation
+  records.forEach(({ child, key, index }) => {
+    const entry = getOrCreateSequenceEntry(
+      key,
+      entries,
+      getTransition,
+      parentOptions,
+    );
+    clearPendingTimers(entry);
+    const delay = calculateSequenceDelay(index, total, sequenceConfig);
+    scheduleEntry(entry, delay, () => {
+      entry.notifyCleanup = undefined;
+      try {
+        const cleanup = entry.callback(child);
+        entry.cleanup = typeof cleanup === "function" ? cleanup : undefined;
+      } catch (error) {
+        console.error("⚠️ Sequence entrance error", error);
+        entry.cleanup = undefined;
+      }
+    });
+  });
+
   return () => {
-    const exitPromises: Promise<void>[] = [];
+    let remaining = records.length;
 
-    const clone = parentElement.cloneNode(true) as HTMLElement;
-    const hasHostParent = !!hostParent;
+    ({ parent: insertionParent, sibling: insertionSibling } =
+      ensureHostPlacement(
+        parentElement,
+        insertionParent,
+        insertionSibling,
+        fallbackParent,
+        fallbackSibling,
+      ));
 
-    let insertionParent: Element | null = hostParent;
-    let insertionSibling: Element | null = nextSibling;
+    parentElement.replaceChildren();
 
-    const fallbackParent =
-      hostParent?.parentElement ?? parentElement.parentElement;
-    const fallbackSibling =
-      hostParent?.nextElementSibling ?? parentElement.nextElementSibling;
-
-    const ensureClonePlacement = () => {
-      if (!insertionParent && fallbackParent) {
-        insertionParent = fallbackParent;
-        insertionSibling = fallbackSibling;
+    if (remaining === 0) {
+      if (parentElement.isConnected) {
+        parentElement.remove();
       }
+      parentOptions?.onCleanupEnd?.();
+      return;
+    }
 
-      if (insertionParent) {
-        if (insertionSibling && insertionParent.contains(insertionSibling)) {
-          insertionParent.insertBefore(clone, insertionSibling);
-        } else {
-          insertionParent.appendChild(clone);
+    const notifyParent = () => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        if (parentElement.isConnected) {
+          parentElement.remove();
         }
-      } else if (fallbackParent) {
-        fallbackParent.appendChild(clone);
+        parentOptions?.onCleanupEnd?.();
       }
     };
 
-    ensureClonePlacement();
-
-    const keepCloneConnected = () => {
-      if (!clone.isConnected && fallbackParent) {
-        if (fallbackSibling && fallbackParent.contains(fallbackSibling)) {
-          fallbackParent.insertBefore(clone, fallbackSibling);
-        } else {
-          fallbackParent.appendChild(clone);
-        }
+    records.forEach(({ key, index }) => {
+      const entry = entries.get(key);
+      if (!entry) {
+        notifyParent();
+        return;
       }
-    };
 
-    queueMicrotask(keepCloneConnected);
-    requestAnimationFrame(() => keepCloneConnected());
+      clearPendingTimers(entry);
 
-    const targetChildren = hasHostParent
-      ? (Array.from(clone.children) as HTMLElement[])
-      : children;
-
-    targetChildren.forEach((child, index) => {
       const delay = calculateSequenceDelay(
         index,
-        targetChildren.length,
+        records.length,
         sequenceConfig,
       );
 
-      const exitPromise = new Promise<void>((resolve) => {
-        const startExit = async () => {
-          try {
-            const transition = getTransition();
-            const config = await resolveTransitionConfig(transition.out, child);
+      const runExit = () => {
+        if (!entry.cleanup) {
+          entries.delete(key);
+          notifyParent();
+          return;
+        }
 
-            if (!config) {
-              resolve();
-              return;
-            }
-
-            await playTransition(child, config, "out");
-            resolve();
-          } catch (error) {
-            console.error("⚠️ Sequence exit error", error);
-            resolve();
-          }
+        entry.notifyCleanup = () => {
+          entries.delete(key);
+          notifyParent();
         };
 
-        if (delay > 0) {
-          setTimeout(() => {
-            void startExit();
-          }, delay);
-        } else {
-          void startExit();
+        try {
+          entry.cleanup();
+        } catch (error) {
+          console.error("⚠️ Sequence exit error", error);
+          entry.cleanup = undefined;
+          entry.notifyCleanup = undefined;
+          entries.delete(key);
+          notifyParent();
         }
-      });
+      };
 
-      exitPromises.push(exitPromise);
+      scheduleEntry(entry, delay, runExit);
     });
-
-    Promise.all(exitPromises)
-      .catch((error) => {
-        console.error("⚠️ Sequence exit coordination error", error);
-      })
-      .finally(() => {
-        if (clone.isConnected) {
-          clone.remove();
-        }
-        parentOptions?.onCleanupEnd?.();
-      });
   };
+}
+
+function ensureHostPlacement(
+  host: HTMLElement,
+  insertionParent: Element | null,
+  insertionSibling: Element | null,
+  fallbackParent: Element | null,
+  fallbackSibling: Element | null,
+): { parent: Element | null; sibling: Element | null } {
+  let parentRef = insertionParent;
+  let siblingRef = insertionSibling;
+
+  if (!parentRef && fallbackParent) {
+    parentRef = fallbackParent;
+    siblingRef = fallbackSibling;
+  }
+
+  if (!parentRef) {
+    if (fallbackParent) {
+      fallbackParent.appendChild(host);
+      parentRef = fallbackParent;
+      siblingRef =
+        fallbackSibling && fallbackParent.contains(fallbackSibling)
+          ? fallbackSibling
+          : null;
+    }
+    return { parent: parentRef, sibling: siblingRef };
+  }
+
+  if (siblingRef && !parentRef.contains(siblingRef)) {
+    siblingRef = null;
+  }
+
+  if (siblingRef) {
+    parentRef.insertBefore(host, siblingRef);
+  } else {
+    parentRef.appendChild(host);
+  }
+
+  return { parent: parentRef, sibling: siblingRef };
+}
+
+function ensureSequenceChildKey(
+  child: HTMLElement,
+  index: number,
+  baseKey: string,
+  instanceId: string,
+): string {
+  const existing = child.getAttribute(SEQUENCE_CHILD_KEY_ATTR);
+  if (existing) {
+    return existing;
+  }
+
+  const generated = `${instanceId}:${baseKey}:${index}`;
+  child.setAttribute(SEQUENCE_CHILD_KEY_ATTR, generated);
+  return generated;
+}
+
+function getOrCreateSequenceEntry<TAnimationValue>(
+  key: string,
+  entries: Map<string, SequenceChildEntry>,
+  getTransition: () => Transition<undefined, TAnimationValue>,
+  parentOptions?: {
+    strategy?: (
+      context: StrategyContext<TAnimationValue>,
+    ) => TransitionStrategy<TAnimationValue>;
+  },
+): SequenceChildEntry {
+  const existing = entries.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const entry: SequenceChildEntry = {
+    callback: (() => undefined) as TransitionCallback,
+    pendingTimers: new Set<TimeoutHandle>(),
+  };
+
+  entry.callback = createTransitionCallback<TAnimationValue>(getTransition, {
+    strategy: parentOptions?.strategy,
+    onCleanupEnd: () => {
+      entry.cleanup = undefined;
+      const notify = entry.notifyCleanup;
+      entry.notifyCleanup = undefined;
+      notify?.();
+    },
+  });
+
+  entries.set(key, entry);
+  return entry;
+}
+
+function scheduleEntry(
+  entry: SequenceChildEntry,
+  delay: number,
+  task: () => void,
+): void {
+  if (delay > 0) {
+    const timerId = setTimeout(() => {
+      entry.pendingTimers.delete(timerId);
+      task();
+    }, delay);
+    entry.pendingTimers.add(timerId);
+    return;
+  }
+
+  task();
+}
+
+function clearPendingTimers(entry: SequenceChildEntry): void {
+  entry.pendingTimers.forEach((timerId) => {
+    clearTimeout(timerId);
+  });
+  entry.pendingTimers.clear();
 }
