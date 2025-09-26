@@ -16,15 +16,15 @@ import type { TransitionKey, SequenceConfig } from "./types";
  * Uses string/symbol keys for all storage
  */
 
-// Map to store transition definitions by key
-const transitionDefinitions = new Map<
-  TransitionKey,
+type TransitionRegistryEntry = {
+  callback: TransitionCallback;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  Transition<undefined, any>
->();
+  getTransition: () => Transition<undefined, any> | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setTransition: (transition: Transition<undefined, any>) => void;
+};
 
-// Map to store transition callbacks by key
-const transitionCallbacks = new Map<TransitionKey, TransitionCallback>();
+const transitionRegistry = new Map<TransitionKey, TransitionRegistryEntry>();
 
 /**
  * Registers a transition with a key and returns the callback
@@ -41,18 +41,30 @@ function registerTransition<TAnimationValue = number>(
     baseKey?: string | symbol;
   },
 ): TransitionCallback {
-  transitionDefinitions.set(key, transition);
-
-  // Return existing callback if it exists
-  let callback = transitionCallbacks.get(key);
-  if (callback) {
-    return callback;
+  const existingEntry = transitionRegistry.get(key);
+  if (existingEntry) {
+    existingEntry.setTransition(transition);
+    return existingEntry.callback;
   }
 
+  let currentTransition: Transition<undefined, TAnimationValue> | undefined =
+    transition;
+
+  const getRegisteredTransition = () => currentTransition;
+
+  const setRegisteredTransition = (
+    next: Transition<undefined, TAnimationValue>,
+  ) => {
+    currentTransition = next;
+  };
+
   // Create new callback
-  callback = createTransitionCallback(
+  const onCleanupEnd =
+    typeof key === "symbol" ? () => unregisterTransition(key) : undefined;
+
+  const callback = createTransitionCallback(
     () => {
-      const trans = transitionDefinitions.get(key);
+      const trans = getRegisteredTransition();
       if (!trans) {
         console.warn(`Transition "${String(key)}" not found`);
         return {};
@@ -61,12 +73,18 @@ function registerTransition<TAnimationValue = number>(
     },
     {
       strategy,
-      onCleanupEnd: () => unregisterTransition(key),
+      onCleanupEnd,
       sequenceConfig: additionalOptions?.sequenceConfig,
       baseKey: additionalOptions?.baseKey,
     },
   );
-  transitionCallbacks.set(key, callback);
+
+  transitionRegistry.set(key, {
+    callback,
+    getTransition: getRegisteredTransition,
+    setTransition: (next) => setRegisteredTransition(next as typeof transition),
+  });
+
   return callback;
 }
 
@@ -74,8 +92,7 @@ function registerTransition<TAnimationValue = number>(
  * Unregisters a transition and cleans up associated resources
  */
 function unregisterTransition(key: TransitionKey): void {
-  transitionDefinitions.delete(key);
-  transitionCallbacks.delete(key);
+  transitionRegistry.delete(key);
 }
 
 // ---------------------------------------------
