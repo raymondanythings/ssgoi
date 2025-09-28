@@ -1,23 +1,31 @@
 import { createTransitionCallback } from "./create-transition-callback";
 import {
-  StrategyContext,
+  type StrategyContext,
   TRANSITION_STRATEGY,
-  TransitionStrategy,
+  type TransitionStrategy,
 } from "./transition-strategy";
 import type {
+  SequenceConfig,
   Transition,
   TransitionCallback,
+  TransitionKey,
   TransitionOptions,
 } from "./types";
-import type { TransitionKey, SequenceConfig } from "./types";
 
 /**
  * Centralized transition management
  * Uses string/symbol keys for all storage
  */
 
-// Map to store transition definitions by key
+// Map to store current transition definitions by key
 const transitionDefinitions = new Map<
+  TransitionKey,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  Transition<undefined, any>
+>();
+
+// Keep last registered transition so rapid re-registers can still resolve
+const lastRegisteredTransitions = new Map<
   TransitionKey,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Transition<undefined, any>
@@ -42,6 +50,7 @@ function registerTransition<TAnimationValue = number>(
   },
 ): TransitionCallback {
   transitionDefinitions.set(key, transition);
+  lastRegisteredTransitions.set(key, transition);
 
   // Return existing callback if it exists
   let callback = transitionCallbacks.get(key);
@@ -53,11 +62,18 @@ function registerTransition<TAnimationValue = number>(
   callback = createTransitionCallback(
     () => {
       const trans = transitionDefinitions.get(key);
-      if (!trans) {
-        console.warn(`Transition "${String(key)}" not found`);
-        return {};
+      if (trans) {
+        lastRegisteredTransitions.set(key, trans);
+        return trans;
       }
-      return trans;
+
+      const fallback = lastRegisteredTransitions.get(key);
+      if (fallback) {
+        return fallback;
+      }
+
+      console.warn(`Transition "${String(key)}" not found`);
+      return {};
     },
     {
       strategy,
